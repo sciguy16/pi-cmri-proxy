@@ -12,3 +12,4 @@ repository = "https://github.com/sciguy16/pi-cmri-proxy"
 crossbeam-channel = "0.4.2"
 rppal = "0.11"
 hex = "0.4"
+cmri = { "path" = "../cmri" }

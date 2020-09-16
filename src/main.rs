@@ -13,6 +13,7 @@ use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 use std::time::Duration; // multi-receiver channels
+use cmri::{CmriStateMachine, CmriMessage, RxState, TX_BUFFER_LEN};
 
 use rppal::gpio::Gpio;
 use rppal::uart::{Parity, Uart};
@@ -165,12 +166,11 @@ impl fmt::Display for CmriPacket {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    println!("Hello, world!");
 
     // there will only be one receiver on the uart end
     let (tcp_to_485_tx, tcp_to_485_rx): (
-        mpsc::Sender<CmriPacket>,
-        mpsc::Receiver<CmriPacket>,
+        mpsc::Sender<CmriMessage>,
+        mpsc::Receiver<CmriMessage>,
     ) = mpsc::channel();
 
     // it cannot be known how many tcp receivers will exist, hence crossbeam
@@ -182,7 +182,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     rts_pin.set_low(); // set RTS high to put MAX485 into RX mode
     let mut uart = Uart::with_path(UART, BAUD_RATE, Parity::None, 8, 2)?;
     let mut buffer = [0_u8];
-    let mut rx_packet = CmriPacket::new();
+    let mut state = CmriStateMachine::new();
 
     // 8 bits * microseconds * seconds per bit
     let byte_time = (8_f64 * 1_000_000_f64 * 1_f64 / (BAUD_RATE as f64)) as u64;
@@ -199,9 +199,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 println!("Sending down uart");
                 rts_pin.set_high();
                 uart.write(&packet.payload)?; // default non-blocking
-                thread::sleep(Duration::from_micros(
-                    (EXTRA_TX_TIME + packet.len() as u64) * byte_time,
-                )); // wait until all data transmitted
+                //thread::sleep(Duration::from_micros(
+                //    (EXTRA_TX_TIME + packet.len() as u64) * byte_time,
+                //)); // wait until all data transmitted
                 println!("Output queue len is {}", uart.output_len()?);
                 uart.drain()?;
                 rts_pin.set_low();
@@ -218,13 +218,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         if uart.read(&mut buffer)? > 0 {
             loop {
                 #[allow(clippy::single_match)]
-                match rx_packet.try_push(buffer[0]) {
-                    Ok(()) => {
+                match state.process(buffer[0]) {
+                    Ok(RxState::Complete) => {
                         // Got a full packet
-                        println!("Received uart packet: {:?}", rx_packet);
-                        rs485_to_tcp_tx.send(rx_packet.clone()).unwrap();
+                        println!("Received uart packet: {:?}", state.message().message_type);
+                        rs485_to_tcp_tx.send(state.message().clone()).unwrap();
                         break;
                     }
+                    Ok(RxState::Listening) => {}
                     Err(_) => {} // Still receiving
                 }
                 buffer = [0];
@@ -243,8 +244,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 }
 
 fn start_listener(
-    tcp_to_485_tx: mpsc::Sender<CmriPacket>,
-    rs485_to_tcp_rx: crossbeam_channel::Receiver<CmriPacket>,
+    tcp_to_485_tx: mpsc::Sender<CmriMessage>,
+    rs485_to_tcp_rx: crossbeam_channel::Receiver<CmriMessage>,
 ) {
     let listener = TcpListener::bind(format!("[::1]:{}", PORT)).unwrap();
     println!("Server listening on port {}", PORT);
@@ -274,20 +275,21 @@ fn start_listener(
     drop(listener);
 }
 
-fn tcp_rx(mut stream: TcpStream, tx_channel: mpsc::Sender<CmriPacket>) {
+fn tcp_rx(mut stream: TcpStream, tx_channel: mpsc::Sender<CmriMessage>) {
     let mut buf = [0_u8; 1];
-    let mut packet: CmriPacket = CmriPacket::new();
+    let mut state = CmriStateMachine::new();
     loop {
         // try reading a byte off the stream
         match stream.read(&mut buf) {
             Ok(1) => {
                 // got a single byte
-                match packet.try_push(buf[0]) {
+                match state.process(buf[0]) {
                     Err(_) => {} // still listening
-                    Ok(()) => {
+                    Ok(RxState::Listening) => {}
+                    Ok(RxState::Complete) => {
                         // message is complete!!
-                        println!("Received TCP message {:?}", packet);
-                        tx_channel.send(packet.clone()).unwrap();
+                        println!("Received TCP message {:?}", state.message().message_type);
+                        tx_channel.send(state.message().clone()).unwrap();
                     }
                 }
             }
@@ -304,8 +306,9 @@ fn tcp_rx(mut stream: TcpStream, tx_channel: mpsc::Sender<CmriPacket>) {
 
 fn tcp_tx(
     mut stream: TcpStream,
-    rx_channel: crossbeam_channel::Receiver<CmriPacket>,
+    rx_channel: crossbeam_channel::Receiver<CmriMessage>,
 ) {
+    let mut buf = [0_u8; TX_BUFFER_LEN];
     loop {
         // if there is data to send then send it
         match rx_channel.recv() {
@@ -318,7 +321,10 @@ fn tcp_tx(
             Ok(msg) => {
                 // got a packet, let's send it!
                 println!("Forwarding packet to TCP stream");
-                if let Err(e) = stream.write_all(&msg.payload) {
+                if let Err(e) = msg.encode(&mut buf) {
+                    println!("Error encoding message: {}", e);
+                }
+                if let Err(e) = stream.write_all(&buf) {
                     println!("Unable to write payload! Error: {}", e);
                     break;
                 }

@@ -13,6 +13,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4785bdd1c96b2a846b2bd7cc02e86b6b3dbf14e7e53446c4f54c92a361040822"
 
 [[package]]
+name = "cmri"
+version = "0.2.0"
+
+[[package]]
 name = "crossbeam-channel"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -61,6 +65,7 @@ checksum = "60302e4db3a61da70c0cb7991976248362f30319e88850c487b9b95bbf059e00"
 name = "pi-cmri-proxy"
 version = "0.1.0"
 dependencies = [
+ "cmri",
  "crossbeam-channel",
  "hex",
  "rppal",
