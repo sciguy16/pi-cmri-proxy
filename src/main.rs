@@ -7,13 +7,13 @@
 
 use crossbeam_channel::unbounded;
 use std::error::Error;
-use std::fmt;
+
+use cmri::{CmriMessage, CmriStateMachine, RxState, TX_BUFFER_LEN};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::mpsc::{self, TryRecvError};
 use std::thread;
 use std::time::Duration; // multi-receiver channels
-use cmri::{CmriStateMachine, CmriMessage, RxState, TX_BUFFER_LEN};
 
 use rppal::gpio::Gpio;
 use rppal::uart::{Parity, Uart};
@@ -38,140 +38,14 @@ const UART: &str = "/dev/ttyAMA1";
 const BAUD_RATE: u32 = 19200;
 const RTS_PIN: u8 = 11;
 const PORT: u16 = 4000;
-const CMRI_PREAMBLE_BYTE: u8 = 0xff;
-const CMRI_START_BYTE: u8 = 0x02;
-const CMRI_STOP_BYTE: u8 = 0x03;
-const CMRI_ESCAPE_BYTE: u8 = 0x10;
+
 // number of byte-lengths extra to wait to account for delays
 const EXTRA_TX_TIME: u64 = 4;
 
-#[derive(Copy, Clone, Debug)]
-enum CmriState {
-    Idle,
-    Attn,
-    Start,
-    Addr,
-    Type,
-    Data,
-    Escape,
-}
-
-#[derive(Clone, Debug)]
-struct CmriPacket {
-    payload: Vec<u8>,
-    state: CmriState,
-}
-
-impl CmriPacket {
-    fn new() -> Self {
-        let mut s = Self {
-            // capacity is the max length from
-            // https://github.com/madleech/ArduinoCMRI/blob/master/CMRI.h
-            payload: Vec::with_capacity(258),
-            state: CmriState::Idle,
-        };
-        s.append(&mut [255_u8, 255]);
-        s
-    }
-
-    /// Try to interpret the next byte read in. Returns an Err(CmriState)
-    /// with the current state if the message is still happening or an Ok(())
-    /// if the message is complete to suggest to the processor that it might
-    /// want to process the full packet.
-    fn try_push(&mut self, byte: u8) -> Result<(), CmriState> {
-        use CmriState::*;
-        match self.state {
-            Idle => {
-                // Idle to Attn if byte is PREAMBLE
-                if byte == CMRI_PREAMBLE_BYTE {
-                    self.payload.clear();
-                    self.payload.push(byte);
-                    self.state = Attn;
-                }
-                // Ignore other bytes while Idle
-            }
-            Attn => {
-                // Attn to Start if byte is PREAMBLE
-                if byte == CMRI_PREAMBLE_BYTE {
-                    self.payload.push(byte);
-                    self.state = Start;
-                } else {
-                    // Otherwise discard and reset to Idle
-                    self.payload.clear();
-                    self.state = Idle;
-                }
-            }
-            Start => {
-                // start byte must be valid
-                if byte == CMRI_START_BYTE {
-                    self.payload.push(byte);
-                    self.state = Addr;
-                } else {
-                    // Otherwise discard and reset to Idle
-                    self.payload.clear();
-                    self.state = Idle;
-                }
-            }
-            Addr => {
-                // Take the next byte as-is for an address
-                self.payload.push(byte);
-                self.state = Type;
-            }
-            Type => {
-                // Take the next byte as-is for message type
-                self.payload.push(byte);
-                self.state = Data;
-            }
-            Data => {
-                match byte {
-                    CMRI_ESCAPE_BYTE => {
-                        // escape the next byte
-                        self.payload.push(byte);
-                        self.state = Escape;
-                    }
-                    CMRI_STOP_BYTE => {
-                        // end transmission
-                        self.payload.push(byte);
-                        self.state = Idle;
-                        return Ok(());
-                    }
-                    _ => {
-                        // any other byte we take as data
-                        self.payload.push(byte);
-                    }
-                }
-            }
-            Escape => {
-                // Escape the next byte, so accept it as data.
-                self.payload.push(byte);
-                self.state = Data;
-            }
-        }
-        Err(self.state)
-    }
-
-    fn append(&mut self, buf: &mut [u8]) {
-        self.payload.extend_from_slice(buf);
-    }
-
-    fn len(&self) -> usize {
-        self.payload.len()
-    }
-}
-
-impl fmt::Display for CmriPacket {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{:?}", self.payload)
-    }
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
-
     // there will only be one receiver on the uart end
-    let (tcp_to_485_tx, tcp_to_485_rx): (
-        mpsc::Sender<CmriMessage>,
-        mpsc::Receiver<CmriMessage>,
-    ) = mpsc::channel();
+    let (tcp_to_485_tx, tcp_to_485_rx): (mpsc::Sender<CmriMessage>, mpsc::Receiver<CmriMessage>) =
+        mpsc::channel();
 
     // it cannot be known how many tcp receivers will exist, hence crossbeam
     let (rs485_to_tcp_tx, rs485_to_tcp_rx) = unbounded();
@@ -199,9 +73,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                 println!("Sending down uart");
                 rts_pin.set_high();
                 uart.write(&packet.payload)?; // default non-blocking
-                //thread::sleep(Duration::from_micros(
-                //    (EXTRA_TX_TIME + packet.len() as u64) * byte_time,
-                //)); // wait until all data transmitted
+                                              //thread::sleep(Duration::from_micros(
+                                              //    (EXTRA_TX_TIME + packet.len() as u64) * byte_time,
+                                              //)); // wait until all data transmitted
                 println!("Output queue len is {}", uart.output_len()?);
                 uart.drain()?;
                 rts_pin.set_low();
@@ -304,10 +178,7 @@ fn tcp_rx(mut stream: TcpStream, tx_channel: mpsc::Sender<CmriMessage>) {
     println!("client exited");
 }
 
-fn tcp_tx(
-    mut stream: TcpStream,
-    rx_channel: crossbeam_channel::Receiver<CmriMessage>,
-) {
+fn tcp_tx(mut stream: TcpStream, rx_channel: crossbeam_channel::Receiver<CmriMessage>) {
     let mut buf = [0_u8; TX_BUFFER_LEN];
     loop {
         // if there is data to send then send it
