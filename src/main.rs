@@ -8,7 +8,9 @@
 use crossbeam_channel::unbounded;
 use std::error::Error;
 
-use cmri::{CmriMessage, CmriStateMachine, MessageType, RxState, TX_BUFFER_LEN};
+use cmri::{
+    CmriMessage, CmriStateMachine, MessageType, RxState, TX_BUFFER_LEN,
+};
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::sync::mpsc::{self, RecvError};
@@ -45,8 +47,10 @@ const EXTRA_TX_TIME: u64 = 4;
 
 fn main() -> Result<(), Box<dyn Error>> {
     // there will only be one receiver on the uart end
-    let (tcp_to_485_tx, tcp_to_485_rx): (mpsc::Sender<CmriMessage>, mpsc::Receiver<CmriMessage>) =
-        mpsc::channel();
+    let (tcp_to_485_tx, tcp_to_485_rx): (
+        mpsc::Sender<CmriMessage>,
+        mpsc::Receiver<CmriMessage>,
+    ) = mpsc::channel();
 
     // it cannot be known how many tcp receivers will exist, hence crossbeam
     let (rs485_to_tcp_tx, rs485_to_tcp_rx) = unbounded();
@@ -113,7 +117,10 @@ fn main() -> Result<(), Box<dyn Error>> {
             match state.process(buffer[0]) {
                 Ok(RxState::Complete) => {
                     // Got a full packet
-                    println!("Received uart packet: {:?}", state.message().message_type);
+                    println!(
+                        "Received uart packet: {:?}",
+                        state.message().message_type
+                    );
                     rs485_to_tcp_tx.send(state.message().clone()).unwrap();
                     break;
                 }
@@ -180,7 +187,10 @@ fn tcp_rx(mut stream: TcpStream, tx_channel: mpsc::Sender<CmriMessage>) {
                     Ok(RxState::Listening) => {}
                     Ok(RxState::Complete) => {
                         // message is complete!!
-                        println!("Received TCP message {:?}", state.message().message_type);
+                        println!(
+                            "Received TCP message {:?}",
+                            state.message().message_type
+                        );
                         tx_channel.send(state.message().clone()).unwrap();
                     }
                 }
@@ -196,7 +206,10 @@ fn tcp_rx(mut stream: TcpStream, tx_channel: mpsc::Sender<CmriMessage>) {
     println!("client exited");
 }
 
-fn tcp_tx(mut stream: TcpStream, rx_channel: crossbeam_channel::Receiver<CmriMessage>) {
+fn tcp_tx(
+    mut stream: TcpStream,
+    rx_channel: crossbeam_channel::Receiver<CmriMessage>,
+) {
     let mut buf = [0_u8; TX_BUFFER_LEN];
     loop {
         // if there is data to send then send it
