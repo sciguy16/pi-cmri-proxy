@@ -13,7 +13,7 @@ use cmri::{
 };
 use std::io::{Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
-use std::sync::mpsc::{self, RecvError};
+use std::sync::mpsc;
 use std::thread;
 use std::time::Duration; // multi-receiver channels
 
@@ -43,7 +43,7 @@ const PORT: u16 = 4000;
 const UARD_READ_TIMEOUT: Duration = Duration::from_millis(500);
 
 // number of byte-lengths extra to wait to account for delays
-const EXTRA_TX_TIME: u64 = 4;
+//const EXTRA_TX_TIME: u64 = 4;
 
 fn main() -> Result<(), Box<dyn Error>> {
     // there will only be one receiver on the uart end
@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut state = CmriStateMachine::new();
 
     // 8 bits * microseconds * seconds per bit
-    let byte_time = (8_f64 * 1_000_000_f64 * 1_f64 / (BAUD_RATE as f64)) as u64;
+    //let byte_time = (8_f64 * 1_000_000_f64 * 1_f64 / (BAUD_RATE as f64)) as u64;
 
     rts_pin.set_high();
     uart.drain()?;
@@ -121,7 +121,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                         "Received uart packet: {:?}",
                         state.message().message_type
                     );
-                    rs485_to_tcp_tx.send(state.message().clone()).unwrap();
+                    rs485_to_tcp_tx.send(*state.message()).unwrap();
                     break;
                 }
                 Ok(RxState::Listening) => {}
@@ -191,7 +191,7 @@ fn tcp_rx(mut stream: TcpStream, tx_channel: mpsc::Sender<CmriMessage>) {
                             "Received TCP message {:?}",
                             state.message().message_type
                         );
-                        tx_channel.send(state.message().clone()).unwrap();
+                        tx_channel.send(*state.message()).unwrap();
                     }
                 }
             }
